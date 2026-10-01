@@ -80,7 +80,7 @@ rm -rf /opt/playwright-browsers/mcp-* 2>/dev/null || true
 if [ "$AGENT" = "codex" ]; then
     export CODEX_HOME=/home/dev/.codex
     mkdir -p "$CODEX_HOME"
-    # Overlay host setup on the writable volume before login and MCP setup.
+    # Overlay host setup on the writable volume before login.
     # Missing host files leave sandbox-created config and sessions intact.
     if [ -d /tmp/host-codex-setup/codex ]; then
         cp -R /tmp/host-codex-setup/codex/. "$CODEX_HOME/"
@@ -157,6 +157,27 @@ else
         chown dev:dev /home/dev/.claude.json
         chmod 600 /home/dev/.claude.json
     fi
+fi
+
+# Drop the Playwright MCP older images registered in opencode's persisted
+# config. opencode has no `mcp remove`, and `opencode mcp add` left trailing
+# commas, so drop those before parsing.
+if [ "$AGENT" = "opencode" ] && grep -qs '"playwright-mcp"' /home/dev/.config/opencode/opencode.json; then
+python3 - <<'MCPEOF' || true
+import json, os, re
+
+path = "/home/dev/.config/opencode/opencode.json"
+with open(path) as f:
+    config = json.loads(re.sub(r",(\s*[}\]])", r"\1", f.read()))
+server = config.get("mcp", {}).get("playwright", {})
+if (server.get("command") or [None])[0] == "playwright-mcp":
+    del config["mcp"]["playwright"]
+    with open(path + ".tmp", "w") as f:
+        json.dump(config, f, indent=2)
+    os.replace(path + ".tmp", path)
+MCPEOF
+chown dev:dev /home/dev/.config/opencode/opencode.json 2>/dev/null || true
+chmod 600 /home/dev/.config/opencode/opencode.json 2>/dev/null || true
 fi
 
 # Point opencode at an OpenAI-compatible server running on the host (the

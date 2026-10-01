@@ -115,11 +115,11 @@ dereferenced so their contents are available inside the sandbox.
 Host setup overwrites matching sandbox files on each launch; files that exist
 only in the sandbox are retained. Host sessions, history, logs, and caches are
 not copied. The copies are owned by the container user, and changes stay inside
-the sandbox. API-key
-fields and literal provider `experimental_bearer_token` values in configuration
-require `--api-keys`; they are also stripped from retained sandbox configuration
-on runs without that option. Custom MCP executables and absolute paths in copied
-configuration must be available inside the container.
+the sandbox. API-key fields and literal provider `experimental_bearer_token`
+values in configuration require `--api-keys`; they are also stripped from
+retained sandbox configuration on runs without that option. Custom MCP
+executables and absolute paths in copied configuration must be available inside
+the container.
 
 If your host login is stored only in an OS keyring, create a file-based login
 first (see [Codex authentication](https://learn.chatgpt.com/docs/auth)):
@@ -208,19 +208,28 @@ session but, like anything outside the cache volumes, don't survive it.
 [Playwright CLI](https://github.com/microsoft/playwright-cli) (`playwright-cli`)
 and a headless Chromium are pre-installed, so the agent can drive a browser via
 shell commands (`playwright-cli open <url>`, `snapshot`, `click e15`, …) with no
-setup. Its skill is pre-installed for all agents: as a local plugin for Claude
-Code (via `CLAUDE_CODE_PLUGIN_DIRS`) and in `~/.agents/skills` for opencode and
-Codex.
+setup. No skill or MCP server is registered for it; to have an agent use it,
+mention it in your `AGENTS.md`/`CLAUDE.md` (`playwright-cli --help` documents
+every command).
 
 - Only `chrome-headless-shell` is installed; full Chrome-for-Testing crashes
-  under the container's security profile. `~/.playwright/cli.config.json` sets
-  `"browserName": "chromium"` so the CLI uses it instead of the Chrome channel.
+  under the container's security profile and there is no display, so
+  `--headed` and `--browser=chrome` don't work. `~/.playwright/cli.config.json`
+  sets `"browserName": "chromium"` so the CLI uses the shell instead of the
+  absent Chrome channel; a project's own `.playwright/cli.config.json` takes
+  precedence.
 - Output (snapshots, screenshots) goes to `.playwright-cli/` in the current
   directory; add it to the project's `.gitignore`.
+- `@playwright/cli` bundles its own playwright-core, so `PLAYWRIGHT_CLI_VERSION`
+  is the single pin for the CLI, its OS deps and the browser.
 - `/opt/playwright-browsers` is a persistent named volume, so the browser is
   baked into `/opt/playwright-seed` and the entrypoint copies missing revisions
   in at start. To upgrade, bump `PLAYWRIGHT_CLI_VERSION` in the Dockerfiles and
   rebuild.
+- Earlier images shipped the Playwright MCP server instead. The entrypoint
+  removes its stale registration from the Codex and opencode config volumes.
+  Old browser revisions stay in the volume; run
+  `docker volume rm claude-sandbox_playwright-browsers` to reclaim the space.
 
 ### Personal skills
 

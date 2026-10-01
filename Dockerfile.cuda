@@ -16,8 +16,7 @@ COPY docker/uv.sh $SCRIPTS/
 RUN bash $SCRIPTS/uv.sh
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
-    PLAYWRIGHT_CLI_VERSION=0.1.21 \
-    CLAUDE_CODE_PLUGIN_DIRS=/opt/claude-plugins/playwright-cli \
+    PLAYWRIGHT_CLI_VERSION=0.1.22 \
     NO_UPDATE_NOTIFIER=1
 COPY docker/playwright-cli.sh $SCRIPTS/
 RUN bash $SCRIPTS/playwright-cli.sh

@@ -351,10 +351,11 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
                     self.assertEqual(mounts["/tmp/host-codex-setup"]["source"], data["env"]["CODEX_SETUP_DIR"])
                     self.assertEqual(mounts["/home/dev/.codex"]["type"], "volume")
 
-    def run_entrypoint(self, host_login, persisted=None, api_keys="false", setup=False):
+    def run_entrypoint(self, host_login, persisted=None, api_keys="false", setup=False, config=None,
+                       agent="codex", opencode_config=None):
         sandbox = self.base / "container"
         sandbox.mkdir(exist_ok=True)
-        for directory in ("home/dev/.codex", "run/user", "tmp", "etc"):
+        for directory in ("home/dev/.codex", "home/dev/.config/opencode", "run/user", "tmp", "etc"):
             (sandbox / directory).mkdir(parents=True, exist_ok=True)
         if host_login is not None:
             self.write(sandbox / "tmp/host-codex-auth.json", host_login)
@@ -362,6 +363,10 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
             self.write(sandbox / "home/dev/.codex/auth.json", persisted)
         (sandbox / "home/dev/.codex/local.config.toml").write_text(CONFIG)
         (sandbox / "home/dev/.codex/history.jsonl").write_text("sandbox history\n")
+        if config is not None:
+            (sandbox / "home/dev/.codex/config.toml").write_text(config)
+        if opencode_config is not None:
+            (sandbox / "home/dev/.config/opencode/opencode.json").write_text(opencode_config)
         if setup:
             destination = sandbox / "tmp/host-codex-setup"
             auth.stage_codex_setup(self.setup, destination / "codex", api_keys == "true")
@@ -374,7 +379,7 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
             script = script.replace(prefix, str(sandbox) + prefix)
         script = script.replace("/usr/local/lib/claude-sandbox/prepare-auth.py", str(ROOT / "prepare-auth.py"))
         result = subprocess.run(["bash", "-c", script, "entrypoint", "codex", "--dangerously-bypass-approvals-and-sandbox"],
-                                env={**self.env, "SANDBOX_AGENT": "codex", "SANDBOX_API_KEYS": api_keys,
+                                env={**self.env, "SANDBOX_AGENT": agent, "SANDBOX_API_KEYS": api_keys,
                                      "CLAUDE_SANDBOX_NO_MPS": "1",
                                      "GOSU_LOG": str(self.base / "gosu.log")},
                                 capture_output=True, text=True)
@@ -394,13 +399,26 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
         self.assertEqual((path.parent.parent / ".agents/skills/example/SKILL.md").read_text(), "Shared skill\n")
         self.assertEqual((path.parent / "history.jsonl").read_text(), "sandbox history\n")
 
-    def test_entrypoint_removes_stale_playwright_mcp(self):
-        sandbox = self.base / "container"
-        (sandbox / "home/dev/.codex").mkdir(parents=True)
-        (sandbox / "home/dev/.codex/config.toml").write_text(
-            '[mcp_servers.playwright]\ncommand = "playwright-mcp"\n')
-        self.run_entrypoint(None)
+    def test_entrypoint_removes_stale_codex_playwright_mcp(self):
+        self.run_entrypoint(None, config='[mcp_servers.playwright]\ncommand = "playwright-mcp"\n')
         self.assertIn("codex mcp remove playwright", (self.base / "gosu.log").read_text())
+
+    def test_entrypoint_keeps_other_codex_playwright_mcp(self):
+        self.run_entrypoint(None, config='[mcp_servers.playwright]\ncommand = "npx"\n')
+        self.assertNotIn("mcp remove", (self.base / "gosu.log").read_text())
+
+    def test_entrypoint_removes_stale_opencode_playwright_mcp(self):
+        # Shaped like `opencode mcp add` output, trailing comma included.
+        self.run_entrypoint(None, agent="opencode", opencode_config="""{
+  "model": "keep-me",
+  "mcp": {
+    "playwright": {"type": "local", "command": ["playwright-mcp", "--headless"]},
+    "other": {"type": "local", "command": ["other-mcp"]}
+  },
+}""")
+        config = json.loads((self.base / "container/home/dev/.config/opencode/opencode.json").read_text())
+        self.assertEqual(config["model"], "keep-me")
+        self.assertEqual(list(config["mcp"]), ["other"])
 
     def test_entrypoint_keeps_sandbox_login_without_host_login(self):
         path = self.run_entrypoint(None, persisted=LOGIN)
