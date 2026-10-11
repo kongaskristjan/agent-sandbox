@@ -139,7 +139,7 @@ class SandboxTests(unittest.TestCase):
             "XDG_CACHE_HOME": str(self.base / "cache"),
             "TMPDIR": str(self.base),
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
-            "CLAUDE_SANDBOX_MODE": "rootful",
+            "AGENT_SANDBOX_MODE": "rootful",
             "ANTHROPIC_API_KEY": "environment-anthropic-secret",
             "OPENAI_API_KEY": "environment-openai-secret",
             "CAPTURE": str(self.base / "capture.json"),
@@ -203,7 +203,7 @@ if "run" in sys.argv:
         path.chmod(0o755)
 
     def launch(self, *args, success=True):
-        result = subprocess.run([str(ROOT / "claude-sandbox"), *args, str(self.host)],
+        result = subprocess.run([str(ROOT / "agent-sandbox"), *args, str(self.host)],
                                 env=self.env, capture_output=True, text=True)
         if not success:
             self.assertNotEqual(result.returncode, 0)
@@ -263,7 +263,7 @@ if "run" in sys.argv:
     def test_malformed_codex_config_fails_before_docker(self):
         (self.setup / "config.toml").write_text("[broken")
         self.launch("--codex", success=False)
-        self.assertFalse(list(self.base.glob("claude-sandbox-auth.*")))
+        self.assertFalse(list(self.base.glob("agent-sandbox-auth.*")))
 
     def test_api_keys_require_opt_in(self):
         data = self.launch("--codex", "--api-keys")
@@ -309,7 +309,7 @@ if "run" in sys.argv:
         self.launch()
         self.assertIn("AGENT_CACHE_BUST=0", json.loads(build.read_text()))
         self.launch("--update")
-        stamp = (self.base / "cache/claude-sandbox/claude-update-stamp").read_text().strip()
+        stamp = (self.base / "cache/agent-sandbox/update-stamp").read_text().strip()
         self.launch()
         self.assertIn(f"AGENT_CACHE_BUST={stamp}", json.loads(build.read_text()))
         for dockerfile in ("Dockerfile", "Dockerfile.cuda", "Dockerfile.rust"):
@@ -324,7 +324,7 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
         self.assertEqual(json.loads(data["files"]["CLAUDE_CREDENTIALS_FILE"]), {
             "claudeAiOauth": {"accessToken": "keychain-oauth"}
         })
-        self.assertFalse(list(self.base.glob("claude-sandbox-auth.*")))
+        self.assertFalse(list(self.base.glob("agent-sandbox-auth.*")))
 
     @unittest.skipUnless(shutil.which("docker"), "Docker Compose is not installed")
     def test_rendered_compose_all_images_and_modes(self):
@@ -332,7 +332,7 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
         # The fake HOME hides the compose CLI plugin; keep the real docker config.
         docker_config = os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))
         for mode in ("rootful", "rootless"):
-            self.env["CLAUDE_SANDBOX_MODE"] = mode
+            self.env["AGENT_SANDBOX_MODE"] = mode
             for image in ((), ("--gpu",), ("--rust",)):
                 with self.subTest(mode=mode, image=image):
                     data = self.launch("--codex", *image)
@@ -341,7 +341,9 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
                                             env={**data["env"], "DOCKER_CONFIG": docker_config},
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    service = json.loads(result.stdout)["services"]["claude-dev"]
+                    rendered = json.loads(result.stdout)
+                    self.assertEqual(rendered["name"], "agent-sandbox")
+                    service = rendered["services"]["agent-dev"]
                     self.assertEqual(service["environment"]["OPENAI_API_KEY"], "")
                     self.assertEqual(service["environment"]["ANTHROPIC_API_KEY"], "")
                     self.assertEqual(service["environment"]["CODEX_HOME"], "/home/dev/.codex")
@@ -377,10 +379,10 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
         script = (ROOT / "entrypoint.sh").read_text()
         for prefix in ("/home/dev", "/opt/", "/workspace/", "/tmp/host-", "/run/user", "/etc/asound.conf"):
             script = script.replace(prefix, str(sandbox) + prefix)
-        script = script.replace("/usr/local/lib/claude-sandbox/prepare-auth.py", str(ROOT / "prepare-auth.py"))
+        script = script.replace("/usr/local/lib/agent-sandbox/prepare-auth.py", str(ROOT / "prepare-auth.py"))
         result = subprocess.run(["bash", "-c", script, "entrypoint", "codex", "--dangerously-bypass-approvals-and-sandbox"],
                                 env={**self.env, "SANDBOX_AGENT": agent, "SANDBOX_API_KEYS": api_keys,
-                                     "CLAUDE_SANDBOX_NO_MPS": "1",
+                                     "AGENT_SANDBOX_NO_MPS": "1",
                                      "GOSU_LOG": str(self.base / "gosu.log")},
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)

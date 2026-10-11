@@ -1,12 +1,14 @@
+name: agent-sandbox
+
 services:
-  claude-dev:
+  agent-dev:
     build: .
     environment:
       - ANTHROPIC_API_KEY=${SANDBOX_ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${SANDBOX_OPENAI_API_KEY:-}
       - SANDBOX_API_KEYS=${SANDBOX_API_KEYS:-false}
       - CODEX_HOME=/home/dev/.codex
-      - CLAUDE_SANDBOX_NO_MPS=${CLAUDE_SANDBOX_NO_MPS:-}
+      - AGENT_SANDBOX_NO_MPS=${AGENT_SANDBOX_NO_MPS:-}
       # Which agent the entrypoint launches (claude by default; opencode or codex
       # when selected by the wrapper). Lets the entrypoint skip the
       # Claude-only auth/trust steps without a separate image.
@@ -21,8 +23,8 @@ services:
       - PULSE_COOKIE=/tmp/host-pulse-cookie
     volumes:
       - ${PROJECT_DIR:-.}:/workspace/project
-      - ${CLAUDE_CREDENTIALS_FILE:?Run the claude-sandbox wrapper to stage credentials}:/tmp/host-credentials.json:ro
-      - ${CLAUDE_CONFIG_FILE:?Run the claude-sandbox wrapper}:/tmp/host-claude.json:ro
+      - ${CLAUDE_CREDENTIALS_FILE:?Run the agent-sandbox wrapper to stage credentials}:/tmp/host-credentials.json:ro
+      - ${CLAUDE_CONFIG_FILE:?Run the agent-sandbox wrapper}:/tmp/host-claude.json:ro
       - claude-config:/home/dev/.claude
       # Share the host's personal skills (~/.claude/skills) with the container,
       # so a skill installed once on the host works in both places. Mounted
@@ -31,10 +33,10 @@ services:
       # the container has no business writing to the host's config.
       - ${HOME}/.claude/skills:/home/dev/.claude/skills:ro
       # Private host-side copies; the wrapper filters API keys before mounting.
-      - ${OPENCODE_AUTH_FILE:?Run the claude-sandbox wrapper}:/tmp/host-opencode-auth.json:ro
-      - ${OPENCODE_CONFIG_FILE:?Run the claude-sandbox wrapper}:/tmp/host-opencode.json:ro
-      - ${CODEX_AUTH_FILE:?Run the claude-sandbox wrapper}:/tmp/host-codex-auth.json:ro
-      - ${CODEX_SETUP_DIR:?Run the claude-sandbox wrapper}:/tmp/host-codex-setup:ro
+      - ${OPENCODE_AUTH_FILE:?Run the agent-sandbox wrapper}:/tmp/host-opencode-auth.json:ro
+      - ${OPENCODE_CONFIG_FILE:?Run the agent-sandbox wrapper}:/tmp/host-opencode.json:ro
+      - ${CODEX_AUTH_FILE:?Run the agent-sandbox wrapper}:/tmp/host-codex-auth.json:ro
+      - ${CODEX_SETUP_DIR:?Run the agent-sandbox wrapper}:/tmp/host-codex-setup:ro
       - codex-config:/home/dev/.codex
       - opencode-config:/home/dev/.config/opencode
       - opencode-data:/home/dev/.local/share/opencode

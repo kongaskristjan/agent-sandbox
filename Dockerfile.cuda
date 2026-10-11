@@ -2,7 +2,7 @@ FROM nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04
 
 # Install steps live in docker/. Each script is copied right before its RUN so
 # editing one only rebuilds from that layer on.
-ARG SCRIPTS=/usr/local/lib/claude-sandbox/build
+ARG SCRIPTS=/usr/local/lib/agent-sandbox/build
 
 COPY docker/apt-base.sh $SCRIPTS/
 RUN bash $SCRIPTS/apt-base.sh python3 python3-pip python3-venv
@@ -21,7 +21,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
 COPY docker/playwright-cli.sh $SCRIPTS/
 RUN bash $SCRIPTS/playwright-cli.sh
 
-# Agent layers go last: `claude-sandbox --update` changes AGENT_CACHE_BUST,
+# Agent layers go last: `agent-sandbox --update` changes AGENT_CACHE_BUST,
 # which re-runs every RUN from here on while the layers above stay cached.
 ARG AGENT_CACHE_BUST=0
 COPY docker/claude.sh $SCRIPTS/
@@ -33,7 +33,7 @@ RUN bash $SCRIPTS/opencode.sh
 
 RUN npm install -g @openai/codex
 
-COPY prepare-auth.py /usr/local/lib/claude-sandbox/prepare-auth.py
+COPY prepare-auth.py /usr/local/lib/agent-sandbox/prepare-auth.py
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

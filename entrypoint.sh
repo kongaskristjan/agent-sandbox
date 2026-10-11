@@ -92,13 +92,13 @@ if [ "$AGENT" = "codex" ]; then
     fi
     # Remove API keys retained in config by earlier --api-keys runs too.
     while IFS= read -r -d '' config; do
-        python3 /usr/local/lib/claude-sandbox/prepare-auth.py codex-config \
+        python3 /usr/local/lib/agent-sandbox/prepare-auth.py codex-config \
             "$config" "$config.tmp" "${SANDBOX_API_KEYS:-false}"
         mv "$config.tmp" "$config"
     done < <(find "$CODEX_HOME" -maxdepth 1 -type f -name '*.toml' -print0)
     if [ -d "$CODEX_HOME/agents" ]; then
         while IFS= read -r -d '' config; do
-            python3 /usr/local/lib/claude-sandbox/prepare-auth.py codex-config \
+            python3 /usr/local/lib/agent-sandbox/prepare-auth.py codex-config \
                 "$config" "$config.tmp" "${SANDBOX_API_KEYS:-false}"
             mv "$config.tmp" "$config"
         done < <(find "$CODEX_HOME/agents" -type f -name '*.toml' -print0)
@@ -115,7 +115,7 @@ if [ "$AGENT" = "codex" ]; then
     # A missing host login must not erase a login created in the sandbox.
     # Strip API billing credentials left by a previous --api-keys run.
     if [ -f "$CODEX_HOME/auth.json" ]; then
-        python3 /usr/local/lib/claude-sandbox/prepare-auth.py codex \
+        python3 /usr/local/lib/agent-sandbox/prepare-auth.py codex \
             "$CODEX_HOME/auth.json" "$CODEX_HOME/auth.json.tmp" "${SANDBOX_API_KEYS:-false}"
         if [ -s "$CODEX_HOME/auth.json.tmp" ]; then
             mv "$CODEX_HOME/auth.json.tmp" "$CODEX_HOME/auth.json"
@@ -291,9 +291,9 @@ fi
 # server on demand, so dev connects as a client through the pipe directory —
 # hence the world-accessible mode on it. Both directory variables are exported
 # so the clients gosu starts below look in the same place.
-# Set CLAUDE_SANDBOX_NO_MPS=1 to skip (e.g. to profile with Nsight, or to keep
+# Set AGENT_SANDBOX_NO_MPS=1 to skip (e.g. to profile with Nsight, or to keep
 # one client's fatal fault from taking down the others' shared server).
-if [ -z "$CLAUDE_SANDBOX_NO_MPS" ] && [ -e /dev/nvidiactl ] \
+if [ -z "$AGENT_SANDBOX_NO_MPS" ] && [ -e /dev/nvidiactl ] \
    && command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
     export CUDA_MPS_PIPE_DIRECTORY=/tmp/nvidia-mps
     export CUDA_MPS_LOG_DIRECTORY=/var/log/nvidia-mps

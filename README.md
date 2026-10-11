@@ -1,4 +1,4 @@
-# claude-sandbox
+# agent-sandbox
 
 A Docker-based sandbox for running Claude Code, OpenCode, or Codex with automatic approvals inside the container. Supports CPU-only, NVIDIA GPU, and Rust workflows.
 
@@ -28,48 +28,52 @@ and needs no additional package.
 ## Setup
 
 ```bash
-git clone <this-repo> ~/claude-sandbox
-chmod +x ~/claude-sandbox/claude-sandbox
+git clone <this-repo> ~/agent-sandbox
+chmod +x ~/agent-sandbox/agent-sandbox
 ```
 
 Optionally add to your PATH:
 
 ```bash
-ln -s ~/claude-sandbox/claude-sandbox ~/.local/bin/claude-sandbox
+ln -s ~/agent-sandbox/agent-sandbox ~/.local/bin/agent-sandbox
 ```
 
 The first run will build the Docker image. The default CPU image is small; `--gpu` switches to a CUDA base image (~10GB download on first build); `--rust` builds a separate image with a rustup toolchain instead of Python.
+
+The Compose project name is pinned to `agent-sandbox` regardless of the clone
+directory, so volumes are named `agent-sandbox_*`. Volumes from the project's
+former name (`claude-sandbox_*`) are not reused.
 
 ## Usage
 
 ```bash
 # Run in current directory (CPU-only)
-~/claude-sandbox/claude-sandbox
+~/agent-sandbox/agent-sandbox
 
 # Run in a specific project
-~/claude-sandbox/claude-sandbox ~/projects/my-dl-project
+~/agent-sandbox/agent-sandbox ~/projects/my-dl-project
 
 # Run opencode instead of Claude Code (same image, chosen at runtime)
-~/claude-sandbox/claude-sandbox --opencode ~/projects/my-project
+~/agent-sandbox/agent-sandbox --opencode ~/projects/my-project
 
 # Run Codex with your host ChatGPT login and setup (also works with --rust or --gpu)
-~/claude-sandbox/claude-sandbox --codex ~/projects/my-project
+~/agent-sandbox/agent-sandbox --codex ~/projects/my-project
 
 # Explicitly opt in to API-key forwarding
-~/claude-sandbox/claude-sandbox --codex --api-keys ~/projects/my-project
+~/agent-sandbox/agent-sandbox --codex --api-keys ~/projects/my-project
 
 # Point opencode at an OpenAI-compatible server on the host (e.g. a local
 # 'openai serve' on port 8080) instead of a hosted provider
-~/claude-sandbox/claude-sandbox --opencode --port 8080 ~/projects/my-project
+~/agent-sandbox/agent-sandbox --opencode --port 8080 ~/projects/my-project
 
 # Enable NVIDIA GPU passthrough with the CUDA image
-~/claude-sandbox/claude-sandbox --gpu ~/projects/my-dl-project
+~/agent-sandbox/agent-sandbox --gpu ~/projects/my-dl-project
 
 # Use the Rust image (rustup toolchain, cargo caches, no Python/CUDA)
-~/claude-sandbox/claude-sandbox --rust ~/projects/my-rust-project
+~/agent-sandbox/agent-sandbox --rust ~/projects/my-rust-project
 
 # Enable host networking (rootful Docker only — always on for rootless)
-~/claude-sandbox/claude-sandbox --host-network ~/projects/my-dl-project
+~/agent-sandbox/agent-sandbox --host-network ~/projects/my-dl-project
 ```
 
 The wrapper auto-detects whether Docker is rootless or rootful and prints the detected mode at startup. Use `--host-network` when you need the container to access services on localhost (e.g., a dev server on port 8080).
@@ -126,7 +130,7 @@ first (see [Codex authentication](https://learn.chatgpt.com/docs/auth)):
 
 ```bash
 codex -c 'cli_auth_credentials_store="file"' login
-claude-sandbox --codex
+agent-sandbox --codex
 ```
 
 A missing Codex login is not fatal: you can also log in inside the container.
@@ -163,7 +167,7 @@ useful when Claude Code runs training, evaluation, and a notebook side by side.
 The pipe and log directories are `/tmp/nvidia-mps` and `/var/log/nvidia-mps`
 (exported as `CUDA_MPS_PIPE_DIRECTORY` / `CUDA_MPS_LOG_DIRECTORY`).
 
-Set `CLAUDE_SANDBOX_NO_MPS=1` to skip it — MPS clients share one server process,
+Set `AGENT_SANDBOX_NO_MPS=1` to skip it — MPS clients share one server process,
 so a fatal fault in one can take down the others, and Nsight profiling of an MPS
 client is restricted. The CPU image ignores the variable; the daemon only starts
 when a GPU is actually passed through.
@@ -195,7 +199,7 @@ Two consequences of `CARGO_TARGET_DIR=/home/dev/.cargo/target`:
   output in the project directory instead.
 - All projects share one target directory, so cargo reuses dependency builds
   whose fingerprint (version, features, profile, compiler) matches across
-  projects. `docker volume rm claude-sandbox_cargo-target` clears it if it grows
+  projects. `docker volume rm agent-sandbox_cargo-target` clears it if it grows
   too large.
 
 The toolchain itself lives in `$RUSTUP_HOME` (`/home/dev/.rustup`) and
@@ -229,7 +233,7 @@ every command).
 - Earlier images shipped the Playwright MCP server instead. The entrypoint
   removes its stale registration from the Codex and opencode config volumes.
   Old browser revisions stay in the volume; run
-  `docker volume rm claude-sandbox_playwright-browsers` to reclaim the space.
+  `docker volume rm agent-sandbox_playwright-browsers` to reclaim the space.
 
 ### Personal skills
 
@@ -254,7 +258,7 @@ Files are bind-mounted, so you can:
 ### Options
 
 ```
-Usage: claude-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]
+Usage: agent-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]
 
 Options:
   --gpu           Use the CUDA image with NVIDIA GPU passthrough
@@ -277,14 +281,14 @@ Options:
                   networking and auto-discovers the server's models
 
 Environment variables:
-  CLAUDE_SANDBOX_MODE=rootless|rootful  Override Docker mode auto-detection
-  CLAUDE_SANDBOX_NO_MPS=1               Don't start the CUDA MPS control daemon
+  AGENT_SANDBOX_MODE=rootless|rootful   Override Docker mode auto-detection
+  AGENT_SANDBOX_NO_MPS=1                Don't start the CUDA MPS control daemon
   ANTHROPIC_API_KEY=sk-ant-...          API key (requires --api-keys)
   OPENAI_API_KEY=sk-...                API key (requires --api-keys)
   CODEX_HOME                          Host Codex directory (default ~/.codex)
 ```
 
-`--update` writes a timestamp to `~/.cache/claude-sandbox/claude-update-stamp`
+`--update` writes a timestamp to `~/.cache/agent-sandbox/update-stamp`
 (or under `$XDG_CACHE_HOME`) and passes it to the build as `AGENT_CACHE_BUST`,
 which rebuilds the Claude Code, opencode and Codex layers and the entrypoint copy;
 apt, node, uv, Rust, and the Playwright browser stay cached. Because the stamp
@@ -358,7 +362,7 @@ comes in as a dependency of the NodeSource `nodejs` package.
 ├── docker-compose.rust.yml          # Optional overlay: Rust image + cargo cache volumes
 ├── docker-compose.host-network.yml  # Optional overlay: host networking for rootful
 ├── entrypoint.sh               # Permission setup, auth forwarding, ALSA→PulseAudio routing, CUDA MPS
-├── claude-sandbox              # Convenience wrapper script (auto-detects Docker mode)
+├── agent-sandbox               # Convenience wrapper script (auto-detects Docker mode)
 ├── prepare-auth.py             # Host-side login staging and API-key filtering
 ├── tests/test_sandbox.py        # Credential and launch regression checks
 └── README.md
@@ -381,7 +385,7 @@ Remove the PulseAudio-related volumes and environment variables from `docker-com
 ## Development checks
 
 ```bash
-bash -n claude-sandbox entrypoint.sh
+bash -n agent-sandbox entrypoint.sh
 python3 -B -m unittest discover -s tests -v
 ```
 

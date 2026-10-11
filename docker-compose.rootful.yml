@@ -1,5 +1,5 @@
 services:
-  claude-dev:
+  agent-dev:
     security_opt:
       - no-new-privileges:true
     cap_drop:

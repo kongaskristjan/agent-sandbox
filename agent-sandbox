@@ -6,7 +6,7 @@ BASE_COMPOSE="$SCRIPT_DIR/docker-compose.yml"
 export HOST_UID="$(id -u)"
 
 usage() {
-    echo "Usage: claude-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]"
+    echo "Usage: agent-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]"
     echo ""
     echo "Options:"
     echo "  --gpu           Use the CUDA image with NVIDIA GPU passthrough"
@@ -29,7 +29,7 @@ usage() {
     echo "                  host networking and auto-discovers its models"
     echo ""
     echo "Environment variables:"
-    echo "  CLAUDE_SANDBOX_MODE=rootless|rootful  Override Docker mode auto-detection"
+    echo "  AGENT_SANDBOX_MODE=rootless|rootful   Override Docker mode auto-detection"
     echo "  ANTHROPIC_API_KEY=sk-ant-...          API key (requires --api-keys)"
     echo "  OPENAI_API_KEY=sk-...                API key (requires --api-keys)"
     echo "  CODEX_HOME                          Host Codex directory (default ~/.codex)"
@@ -120,7 +120,7 @@ export OPENCODE_API_HOST="${OPENCODE_API_HOST:-127.0.0.1}"
 # Stage only the selected agent's credentials in private, read-only mounts.
 # Filtering must happen on the host: filtering after mounting would still
 # expose the original API keys to processes inside the sandbox.
-AUTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/claude-sandbox-auth.XXXXXX")"
+AUTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-auth.XXXXXX")"
 trap 'rm -rf "$AUTH_DIR"' EXIT
 export CLAUDE_CREDENTIALS_FILE="$AUTH_DIR/claude-credentials.json"
 export CLAUDE_CONFIG_FILE="$AUTH_DIR/claude.json"
@@ -203,10 +203,10 @@ mkdir -p "$HOME/.claude/skills"
 
 # Detect rootless vs rootful Docker
 detect_docker_mode() {
-    if [ -n "${CLAUDE_SANDBOX_MODE:-}" ]; then
-        case "$CLAUDE_SANDBOX_MODE" in
-            rootless|rootful) echo "$CLAUDE_SANDBOX_MODE"; return ;;
-            *) echo "Error: CLAUDE_SANDBOX_MODE must be 'rootless' or 'rootful'" >&2; exit 1 ;;
+    if [ -n "${AGENT_SANDBOX_MODE:-}" ]; then
+        case "$AGENT_SANDBOX_MODE" in
+            rootless|rootful) echo "$AGENT_SANDBOX_MODE"; return ;;
+            *) echo "Error: AGENT_SANDBOX_MODE must be 'rootless' or 'rootful'" >&2; exit 1 ;;
         esac
     fi
 
@@ -258,9 +258,8 @@ echo "Docker mode: $STATUS"
 
 # --update bumps a stamp fed to AGENT_CACHE_BUST, which rebuilds the agent
 # layers. It is passed on every build: with a one-off value the next plain
-# build would match the stale layers again. The file name predates the other
-# agents; keep it so existing stamps carry over.
-STAMP_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-sandbox/claude-update-stamp"
+# build would match the stale layers again.
+STAMP_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/agent-sandbox/update-stamp"
 if [ "$UPDATE" = true ]; then
     mkdir -p "$(dirname "$STAMP_FILE")"
     date +%s > "$STAMP_FILE"
@@ -282,4 +281,4 @@ elif [ "$AGENTS" = true ]; then
 fi
 
 docker compose "${COMPOSE_FILES[@]}" build "${BUILD_ARGS[@]}"
-docker compose "${COMPOSE_FILES[@]}" run --rm claude-dev ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}
+docker compose "${COMPOSE_FILES[@]}" run --rm agent-dev ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}
