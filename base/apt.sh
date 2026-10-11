@@ -1,5 +1,5 @@
 #!/bin/bash
-# Packages every image needs; image-specific extras come as arguments.
+# Packages every image needs; the features' apt packages come as arguments.
 set -euo pipefail
 apt-get update
 apt-get install -y \

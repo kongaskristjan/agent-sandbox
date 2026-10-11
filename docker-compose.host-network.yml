@@ -1,3 +1,0 @@
-services:
-  agent-dev:
-    network_mode: host

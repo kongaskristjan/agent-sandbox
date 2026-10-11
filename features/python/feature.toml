@@ -1,0 +1,10 @@
+description = "Python 3 with pip, venv and uv"
+apt = ["python3", "python3-pip", "python3-venv"]
+volumes = { "pip-cache" = "/root/.cache/pip", "uv-cache" = "/home/dev/.cache/uv", "uv-python" = "/home/dev/.local/share/uv/python" }
+
+[env]
+# A separate venv name keeps the container's venv from clobbering the host's .venv.
+UV_PROJECT_ENVIRONMENT = ".venv-container"
+UV_LINK_MODE = "copy"
+UV_CACHE_DIR = "/home/dev/.cache/uv"
+UV_PYTHON_INSTALL_DIR = "/home/dev/.local/share/uv/python"

@@ -1,17 +1,18 @@
+# Shared settings. The wrapper layers on docker-compose.<mode>.yml and the
+# profile's generated override (build, image, feature volumes), so the
+# project name stays agent-sandbox and volumes stay agent-sandbox_<name>.
 name: agent-sandbox
 
 services:
   agent-dev:
-    build: .
     environment:
       - ANTHROPIC_API_KEY=${SANDBOX_ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${SANDBOX_OPENAI_API_KEY:-}
       - SANDBOX_API_KEYS=${SANDBOX_API_KEYS:-false}
       - CODEX_HOME=/home/dev/.codex
       - AGENT_SANDBOX_NO_MPS=${AGENT_SANDBOX_NO_MPS:-}
-      # Which agent the entrypoint launches (claude by default; opencode or codex
-      # when selected by the wrapper). Lets the entrypoint skip the
-      # Claude-only auth/trust steps without a separate image.
+      # Which agent the entrypoint launches; lets it skip the other agents'
+      # auth/trust steps.
       - SANDBOX_AGENT=${SANDBOX_AGENT:-claude}
       # Host OpenAI-compatible server port (--port, opencode only). Empty unless
       # --port is passed; the entrypoint points opencode at
@@ -40,10 +41,6 @@ services:
       - codex-config:/home/dev/.codex
       - opencode-config:/home/dev/.config/opencode
       - opencode-data:/home/dev/.local/share/opencode
-      - pip-cache:/root/.cache/pip
-      - uv-cache:/home/dev/.cache/uv
-      - uv-python:/home/dev/.local/share/uv/python
-      - playwright-browsers:/opt/playwright-browsers
       - /run/user/${HOST_UID:-1000}/pulse:/run/user/${HOST_UID:-1000}/pulse
       - ${HOME}/.gitconfig:/tmp/host-gitconfig:ro
       - ${HOME}/.config/pulse/cookie:/tmp/host-pulse-cookie:ro
@@ -57,7 +54,3 @@ volumes:
   claude-config:
   opencode-config:
   opencode-data:
-  pip-cache:
-  uv-cache:
-  uv-python:
-  playwright-browsers:

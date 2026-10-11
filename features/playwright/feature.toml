@@ -1,0 +1,7 @@
+description = "Playwright CLI with headless Chromium"
+volumes = { "playwright-browsers" = "/opt/playwright-browsers" }
+
+[env]
+PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers"
+# Single pin for the CLI, its OS deps and the browser.
+PLAYWRIGHT_CLI_VERSION = "0.1.22"

@@ -1,11 +1,11 @@
 # agent-sandbox
 
-A Docker-based sandbox for running Claude Code, OpenCode, or Codex with automatic approvals inside the container. Supports CPU-only, NVIDIA GPU, and Rust workflows.
+A Docker-based sandbox for running Claude Code, OpenCode, or Codex with automatic approvals inside the container. Images are built from machine-local **profiles** that combine a base (Ubuntu or CUDA), **features** (Python, Rust, TypeScript, Playwright, or your own), and the agents you use.
 
 ## What it does
 
 - Runs Claude Code, OpenCode, or Codex inside a Docker container
-- Ships a lightweight CPU image by default; opt in to a CUDA image with `--gpu` for deep learning workloads, or a Rust image with `--rust`
+- Builds one image per profile; a configuration dialog creates the first profile on first run
 - Bind-mounts your project directory so you can edit files from both host (VS Code) and container (Claude Code)
 - Forwards your selected agent's subscription login (including Codex ChatGPT login); API keys require `--api-keys`
 - Shares your personal skills (`~/.claude/skills`), so they work inside and outside the sandbox
@@ -16,12 +16,12 @@ A Docker-based sandbox for running Claude Code, OpenCode, or Codex with automati
 ## Prerequisites
 
 - Linux with Docker installed (rootless or rootful), or macOS with Docker Desktop
-- NVIDIA GPU with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (only required when using `--gpu`)
-- Python 3 on the host (with `tomli` installed on Python older than 3.11 for copying Codex TOML configuration)
+- NVIDIA GPU with [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (only for profiles with `base = "cuda"`)
+- Python 3 on the host (with `tomli` installed on Python older than 3.11 for reading the profile config and Codex TOML configuration)
 - Your chosen agent logged in on the host, or an API key with explicit `--api-keys` opt-in
 - PulseAudio or PipeWire (for voice mode)
 
-On Python older than 3.11, install the Codex configuration parser with
+On Python older than 3.11, install the TOML parser with
 `python3 -m pip install tomli`. Python 3.11+ uses the built-in `tomllib` module
 and needs no additional package.
 
@@ -38,25 +38,29 @@ Optionally add to your PATH:
 ln -s ~/agent-sandbox/agent-sandbox ~/.local/bin/agent-sandbox
 ```
 
-The first run will build the Docker image. The default CPU image is small; `--gpu` switches to a CUDA base image (~10GB download on first build); `--rust` builds a separate image with a rustup toolchain instead of Python.
+The first run in a terminal asks a few questions to create a profile, then
+builds its image (`agent-sandbox-<profile>`). A `cuda` base is a ~10GB
+download on first build.
 
 The Compose project name is pinned to `agent-sandbox` regardless of the clone
-directory, so volumes are named `agent-sandbox_*`. Volumes from the project's
-former name (`claude-sandbox_*`) are not reused.
+directory or profile, so volumes are named `agent-sandbox_*` and shared by every
+profile that mounts them. Volumes from the project's former name
+(`claude-sandbox_*`) are not reused.
 
 ## Usage
 
 ```bash
-# Run in current directory (CPU-only)
+# Run the default profile's default agent in the current directory
 ~/agent-sandbox/agent-sandbox
 
 # Run in a specific project
 ~/agent-sandbox/agent-sandbox ~/projects/my-dl-project
 
-# Run opencode instead of Claude Code (same image, chosen at runtime)
-~/agent-sandbox/agent-sandbox --opencode ~/projects/my-project
+# Use another profile
+~/agent-sandbox/agent-sandbox -p gpu ~/projects/my-dl-project
 
-# Run Codex with your host ChatGPT login and setup (also works with --rust or --gpu)
+# Run opencode or Codex instead of the profile's default agent
+~/agent-sandbox/agent-sandbox --opencode ~/projects/my-project
 ~/agent-sandbox/agent-sandbox --codex ~/projects/my-project
 
 # Explicitly opt in to API-key forwarding
@@ -66,19 +70,96 @@ former name (`claude-sandbox_*`) are not reused.
 # 'openai serve' on port 8080) instead of a hosted provider
 ~/agent-sandbox/agent-sandbox --opencode --port 8080 ~/projects/my-project
 
-# Enable NVIDIA GPU passthrough with the CUDA image
-~/agent-sandbox/agent-sandbox --gpu ~/projects/my-dl-project
-
-# Use the Rust image (rustup toolchain, cargo caches, no Python/CUDA)
-~/agent-sandbox/agent-sandbox --rust ~/projects/my-rust-project
-
 # Enable host networking (rootful Docker only — always on for rootless)
-~/agent-sandbox/agent-sandbox --host-network ~/projects/my-dl-project
+~/agent-sandbox/agent-sandbox --host-network ~/projects/my-project
+
+# Add, edit or delete profiles, or list them
+~/agent-sandbox/agent-sandbox config
+~/agent-sandbox/agent-sandbox config --list
 ```
 
-The wrapper auto-detects whether Docker is rootless or rootful and prints the detected mode at startup. Use `--host-network` when you need the container to access services on localhost (e.g., a dev server on port 8080).
+The wrapper auto-detects whether Docker is rootless or rootful and prints the detected mode and profile at startup. Use `--host-network` when you need the container to access services on localhost (e.g., a dev server on port 8080).
 
 Claude Code starts with `--dangerously-skip-permissions`, opencode with `--auto`, and Codex with `--dangerously-bypass-approvals-and-sandbox` inside the container. Docker provides the isolation boundary. Your project files are mounted at `/workspace/project`.
+
+### Profiles
+
+Profiles live in `~/.config/agent-sandbox/config.toml` (or under
+`$XDG_CONFIG_HOME`). `agent-sandbox config` edits them interactively (and
+rewrites the file, dropping comments); editing the file by hand works too:
+
+```toml
+default = "dev"
+
+[profiles.dev]
+base = "ubuntu"                 # or "cuda" (NVIDIA GPU passthrough)
+features = ["python", "rust", "node-ts", "playwright"]
+agents = ["claude", "opencode", "codex"]  # installed agents, at least one
+default_agent = "claude"        # runs when no agent flag is given
+network = "bridge"              # or "host"
+ports = [3000, "5173:5173"]     # published ports; 3000 means 3000:3000
+```
+
+Every key except the table name is optional; the defaults are `ubuntu`, no
+features, all agents, the first agent, `bridge` and no ports.
+
+The profile for a run is, in order: `-p/--profile <name>`, the `profile` key
+of `<project-dir>/.agent-sandbox.toml`, then `default`. That per-project file
+can only hold small overrides:
+
+```toml
+profile = "gpu"
+ports = [8080]      # added to the profile's ports
+network = "host"    # replaces the profile's network
+```
+
+`--opencode`, `--codex` and `--agents` pick an agent at run time; asking for an
+agent the profile doesn't install is an error.
+
+Ports are published with `docker compose run --service-ports`. A port like
+`3000` binds on all host interfaces; write `"127.0.0.1:3000:3000"` to keep it
+local. Under host networking (rootless Docker, `network = "host"`,
+`--host-network` or `--port`) the container already shares the host's ports,
+so configured ports are skipped with a warning.
+
+Each run regenerates the profile's build context in
+`~/.cache/agent-sandbox/profiles/<name>/` (or under `$XDG_CACHE_HOME`): a
+Dockerfile, a Compose override and copies of the install scripts. The
+Dockerfile runs, in order: the base image, one apt layer with every feature's
+packages, Node.js, the features (dependencies first, otherwise by name, so
+profiles share cached layers), then the agents.
+
+### Features
+
+A feature is a directory with an `install.sh` (run as root at build time) and
+an optional `feature.toml`:
+
+```toml
+description = "Shown in the configuration dialog"
+requires = ["python"]                      # pulled in and installed first
+apt = ["libpq-dev"]                        # merged into the shared apt layer
+volumes = { "my-cache" = "/home/dev/.cache/my-tool" }  # named volumes
+compose = { cap_add = ["SYS_PTRACE"] }     # extra Compose service keys
+
+[env]   # ENV before the install step, so the script and the image see it
+MY_TOOL_HOME = "/opt/my-tool"
+```
+
+Built-in features are in `features/`:
+
+| Feature | Installs | Volumes |
+| --- | --- | --- |
+| `python` | Python 3, pip, venv, uv (`UV_PROJECT_ENVIRONMENT=.venv-container`) | `pip-cache`, `uv-cache`, `uv-python` |
+| `rust` | rustup stable, rustfmt, clippy, `pkg-config`, `libssl-dev` | `cargo-registry`, `cargo-git`, `cargo-target` |
+| `node-ts` | TypeScript, tsx, pnpm (global npm packages) | — |
+| `playwright` | Playwright CLI + headless Chromium and its OS deps | `playwright-browsers` |
+
+Add your own in `~/.config/agent-sandbox/features/<name>/`; one named like a
+built-in replaces it. The whole directory except `feature.toml` is copied into
+the build, so `install.sh` can use files next to it. Volumes are named
+`agent-sandbox_<volume>` and are root-owned unless the mount point exists in
+the image: create and `chown dev:dev` it in `install.sh` so Docker copies the
+ownership into a new volume.
 
 ### Authentication
 
@@ -160,7 +241,7 @@ Voice mode (`/voice`) works out of the box. The container routes audio through y
 
 ### GPU sharing (CUDA MPS)
 
-With `--gpu`, the entrypoint starts the CUDA MPS control daemon
+With a `cuda` profile, the entrypoint starts the CUDA MPS control daemon
 (`nvidia-cuda-mps-control -d`) so that several processes hitting the same GPU
 run their kernels concurrently in one context instead of being time-sliced —
 useful when Claude Code runs training, evaluation, and a notebook side by side.
@@ -169,15 +250,14 @@ The pipe and log directories are `/tmp/nvidia-mps` and `/var/log/nvidia-mps`
 
 Set `AGENT_SANDBOX_NO_MPS=1` to skip it — MPS clients share one server process,
 so a fatal fault in one can take down the others, and Nsight profiling of an MPS
-client is restricted. The CPU image ignores the variable; the daemon only starts
-when a GPU is actually passed through.
+client is restricted. Ubuntu-based images ignore the variable; the daemon only
+starts when a GPU is actually passed through.
 
-### Rust image
+### Rust feature
 
-`--rust` builds `Dockerfile.rust`: Ubuntu 24.04 with a rustup-managed stable
-toolchain (plus `rustfmt` and `clippy`), Node.js, all three agents and Playwright
-CLI — but no Python tooling and no CUDA. Common `-sys` crate build inputs
-(`pkg-config`, `libssl-dev`, `cmake`, `build-essential`) are present.
+The `rust` feature installs a rustup-managed stable toolchain (plus `rustfmt`
+and `clippy`). Common `-sys` crate build inputs (`pkg-config`, `libssl-dev`,
+`cmake`, `build-essential`) are present.
 
 Cargo's caches are persistent named volumes, the same way the uv cache is, so
 dependencies are downloaded and compiled once instead of once per container:
@@ -193,7 +273,7 @@ Two consequences of `CARGO_TARGET_DIR=/home/dev/.cargo/target`:
 - Builds inside the sandbox do **not** write a `target/` into your project
   directory, so they can't collide with a `target/` the host built with a
   different toolchain (the same reasoning behind `UV_PROJECT_ENVIRONMENT=.venv-container`
-  in the Python images). Artifacts live at `/home/dev/.cargo/target/<profile>/`
+  in the `python` feature). Artifacts live at `/home/dev/.cargo/target/<profile>/`
   inside the container; `cargo run` and `cargo test` find them as usual. Run
   `CARGO_TARGET_DIR=target cargo build` for the rare case where you want the
   output in the project directory instead.
@@ -207,10 +287,10 @@ The toolchain itself lives in `$RUSTUP_HOME` (`/home/dev/.rustup`) and
 what an old volume holds. `rustup update` and `cargo install` work inside a
 session but, like anything outside the cache volumes, don't survive it.
 
-### Playwright CLI (browser automation)
+### Playwright feature (browser automation)
 
-[Playwright CLI](https://github.com/microsoft/playwright-cli) (`playwright-cli`)
-and a headless Chromium are pre-installed, so the agent can drive a browser via
+With the `playwright` feature, [Playwright CLI](https://github.com/microsoft/playwright-cli)
+(`playwright-cli`) and a headless Chromium are pre-installed, so the agent can drive a browser via
 shell commands (`playwright-cli open <url>`, `snapshot`, `click e15`, …) with no
 setup. No skill or MCP server is registered for it; to have an agent use it,
 mention it in your `AGENTS.md`/`CLAUDE.md` (`playwright-cli --help` documents
@@ -228,8 +308,8 @@ every command).
   is the single pin for the CLI, its OS deps and the browser.
 - `/opt/playwright-browsers` is a persistent named volume, so the browser is
   baked into `/opt/playwright-seed` and the entrypoint copies missing revisions
-  in at start. To upgrade, bump `PLAYWRIGHT_CLI_VERSION` in the Dockerfiles and
-  rebuild.
+  in at start. To upgrade, bump `PLAYWRIGHT_CLI_VERSION` in
+  `features/playwright/feature.toml`; the next run rebuilds.
 - Earlier images shipped the Playwright MCP server instead. The entrypoint
   removes its stale registration from the Codex and opencode config volumes.
   Old browser revisions stay in the volume; run
@@ -258,27 +338,30 @@ Files are bind-mounted, so you can:
 ### Options
 
 ```
-Usage: agent-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]
+Usage: agent-sandbox [-p <profile>] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]
+       agent-sandbox config [--list]
+
+Commands:
+  config          Add, edit or delete profiles and pick the default
+  config --list   List profiles
 
 Options:
-  --gpu           Use the CUDA image with NVIDIA GPU passthrough
-                  (default: CPU-only ubuntu:24.04 image)
-  --rust          Use the Rust image (rustup toolchain, no Python or
-                  CUDA) with persistent cargo registry and build caches
+  -p, --profile <name>  Use this profile (default: 'profile' in the
+                  project's .agent-sandbox.toml, else the config default)
   --host-network  Use host networking (always enabled for rootless Docker,
                   opt-in for rootful Docker)
   --update        Refresh the agent binaries in the image (other layers
                   stay cached); future runs reuse the refreshed layer
   --agents        Launch the background-agents view ('claude agents')
                   instead of an interactive session
-  --opencode      Run opencode instead of Claude Code (same image; the agent
-                  is selected at runtime, not baked into one)
+  --opencode      Run opencode instead of the profile's default agent
   --codex         Run Codex using your host ChatGPT login and setup
+                  (without these, the profile's default_agent runs)
   --api-keys      Also forward stored API keys and ANTHROPIC_API_KEY /
                   OPENAI_API_KEY (disabled by default)
-  --port <port>   (--opencode only) Point opencode at an OpenAI-compatible
-                  server running on the host at this port; auto-enables host
-                  networking and auto-discovers the server's models
+  --port <port>   (opencode only) Point opencode at an OpenAI-compatible
+                  server running on the host at this port; auto-enables
+                  host networking and auto-discovers its models
 
 Environment variables:
   AGENT_SANDBOX_MODE=rootless|rootful   Override Docker mode auto-detection
@@ -286,14 +369,16 @@ Environment variables:
   ANTHROPIC_API_KEY=sk-ant-...          API key (requires --api-keys)
   OPENAI_API_KEY=sk-...                API key (requires --api-keys)
   CODEX_HOME                          Host Codex directory (default ~/.codex)
+  OPENCODE_API_HOST=127.0.0.1          Host address --port targets (opencode)
+  XDG_CONFIG_HOME, XDG_CACHE_HOME     Locations of config.toml and generated files
 ```
 
 `--update` writes a timestamp to `~/.cache/agent-sandbox/update-stamp`
 (or under `$XDG_CACHE_HOME`) and passes it to the build as `AGENT_CACHE_BUST`,
-which rebuilds the Claude Code, opencode and Codex layers and the entrypoint copy;
-apt, node, uv, Rust, and the Playwright browser stay cached. Because the stamp
-persists and is passed on every run, later runs keep using the refreshed layers
-instead of matching the stale ones.
+which rebuilds the agent layers and the entrypoint copy; the base, apt and
+feature layers stay cached. Because the stamp persists and is passed on every
+run, later runs keep using the refreshed layers instead of matching the stale
+ones.
 
 ## Security model
 
@@ -314,7 +399,7 @@ Security properties:
 
 In rootful mode, the Docker daemon runs as root. The sandbox applies additional hardening:
 
-- **No host networking** (default): Uses Docker's default bridge network instead of `network_mode: host`. The container can reach the internet (for Anthropic API calls) but cannot bind host ports or access host-only localhost services. Use `--host-network` to opt in to host networking when needed.
+- **No host networking** (default): Uses Docker's default bridge network instead of `network_mode: host`. The container can reach the internet (for Anthropic API calls) but cannot bind host ports or access host-only localhost services. Only the profile's `ports` are published. Use `--host-network` or `network = "host"` to opt in to host networking when needed.
 - **`no-new-privileges`**: Prevents any process in the container from gaining additional privileges via setuid/setgid binaries.
 - **Minimal capabilities**: Drops all Linux capabilities except the minimum needed for container startup (`CHOWN`, `SETUID`, `SETGID`, `FOWNER`, `DAC_OVERRIDE`). These are used only by the entrypoint script; Claude Code runs as non-root and has no capabilities.
 
@@ -329,63 +414,56 @@ Security properties:
 
 Every image:
 
+- Ubuntu 24.04 (`base = "ubuntu"`) or CUDA 13.0 + cuDNN on Ubuntu 24.04 (`base = "cuda"`)
 - Node.js 22
-- Claude Code (native binary with voice support)
-- opencode (native binary; select with `--opencode`)
-- Codex (`@openai/codex`; select with `--codex`)
-- git, git-lfs, curl, wget, build-essential, cmake
-- [Playwright CLI](https://github.com/microsoft/playwright-cli) + headless Chromium and its OS deps
+- git, git-lfs, curl, wget, build-essential, cmake, audio tools for voice mode
+- The profile's agents: Claude Code (native binary with voice support),
+  opencode (native binary), Codex (`@openai/codex`)
+- The profile's features (see [Features](#features))
 
-Per image:
-
-| | default | `--gpu` | `--rust` |
-| --- | --- | --- | --- |
-| Base | Ubuntu 24.04 | CUDA 13.0 + cuDNN on Ubuntu 24.04 | Ubuntu 24.04 |
-| Python 3.12 + pip + venv + uv | ✅ | ✅ | —* |
-| CUDA toolkit / NVIDIA passthrough | — | ✅ | — |
-| rustup (stable, rustfmt, clippy) + cargo caches | — | — | ✅ |
-
-\* The Rust image installs no Python tooling, but a bare `python3` interpreter
-comes in as a dependency of the NodeSource `nodejs` package.
+A bare `python3` interpreter is always present as a dependency of the
+NodeSource `nodejs` package; the `python` feature adds pip, venv and uv.
 
 ## File structure
 
 ```
-├── Dockerfile                  # Default CPU image: Ubuntu 24.04 + Python + Claude Code + uv
-├── Dockerfile.cuda             # Optional CUDA image (used with --gpu)
-├── Dockerfile.rust             # Optional Rust image (used with --rust)
-├── docker/                     # Install scripts shared by the Dockerfiles (one layer each)
-├── docker-compose.yml          # Base shared configuration (audio, volumes)
-├── docker-compose.rootless.yml      # Rootless override: host networking
-├── docker-compose.rootful.yml       # Rootful override: security hardening
-├── docker-compose.gpu.yml           # Optional overlay: CUDA image + NVIDIA runtime
-├── docker-compose.rust.yml          # Optional overlay: Rust image + cargo cache volumes
-├── docker-compose.host-network.yml  # Optional overlay: host networking for rootful
-├── entrypoint.sh               # Permission setup, auth forwarding, ALSA→PulseAudio routing, CUDA MPS
-├── agent-sandbox               # Convenience wrapper script (auto-detects Docker mode)
+├── agent-sandbox               # Wrapper: flags, credential staging, Docker mode detection
+├── sandbox-config.py           # Profiles: config dialog, selection, Dockerfile/Compose generation
 ├── prepare-auth.py             # Host-side login staging and API-key filtering
-├── tests/test_sandbox.py        # Credential and launch regression checks
+├── entrypoint.sh               # Permission setup, auth forwarding, ALSA→PulseAudio routing, CUDA MPS
+├── base/                       # Install steps every image runs (apt, Node.js)
+├── agents/                     # One install script per agent
+├── features/                   # Built-in features (install.sh + feature.toml)
+├── docker-compose.yml          # Shared configuration (mounts, env, agent volumes)
+├── docker-compose.rootless.yml # Rootless override: host networking
+├── docker-compose.rootful.yml  # Rootful override: security hardening
+├── tests/test_sandbox.py       # Credential, profile and launch regression checks
 └── README.md
 ```
 
 ## Customization
 
-### Adding Python packages to the base image
+### Adding tools to an image
 
-Add to the Dockerfile:
+Add a feature (see [Features](#features)) and enable it in a profile, for
+example `~/.config/agent-sandbox/features/torch/install.sh`:
 
-```dockerfile
-RUN pip install torch torchvision --break-system-packages
+```bash
+#!/bin/bash
+set -euo pipefail
+pip install torch torchvision --break-system-packages
 ```
+
+with `requires = ["python"]` in its `feature.toml`.
 
 ### Disabling voice mode
 
-Remove the PulseAudio-related volumes and environment variables from `docker-compose.yml`, and the `sox`/`alsa`/`pulseaudio` packages from `docker/apt-base.sh`.
+Remove the PulseAudio-related volumes and environment variables from `docker-compose.yml`, and the `sox`/`alsa`/`pulseaudio` packages from `base/apt.sh`.
 
 ## Development checks
 
 ```bash
-bash -n agent-sandbox entrypoint.sh
+bash -n agent-sandbox entrypoint.sh base/*.sh agents/*.sh features/*/install.sh
 python3 -B -m unittest discover -s tests -v
 ```
 

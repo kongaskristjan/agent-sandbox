@@ -21,6 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("prepare_auth", ROOT / "prepare-auth.py")
 auth = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(auth)
+spec = importlib.util.spec_from_file_location("sandbox_config", ROOT / "sandbox-config.py")
+profiles = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(profiles)
 LOGIN = {
     "auth_mode": "chatgpt",
     "OPENAI_API_KEY": "stored-api-secret",
@@ -46,6 +49,23 @@ NORMAL_SETTING = "keep-me"
 [model_providers.custom]
 base_url = "https://example.invalid/v1"
 experimental_bearer_token = "provider-secret"
+'''
+
+PROFILES = '''default = "dev"
+
+[profiles.dev]
+features = ["python", "rust"]
+ports = [3000]
+
+[profiles.gpu]
+base = "cuda"
+features = ["python"]
+agents = ["claude"]
+network = "host"
+
+[profiles.oc]
+agents = ["claude", "opencode"]
+default_agent = "opencode"
 '''
 
 
@@ -123,6 +143,88 @@ name = "two"
                 auth.stage_codex_config(Path("unused"), Path("unused"))
 
 
+class ProfileTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.base = Path(temp.name)
+        self.env = {"HOME": str(self.base), "XDG_CONFIG_HOME": str(self.base / "config"),
+                    "XDG_CACHE_HOME": str(self.base / "cache")}
+        patcher = patch.dict(os.environ, self.env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def feature(self, name, toml, script="true\n"):
+        directory = self.base / "config/agent-sandbox/features" / name
+        directory.mkdir(parents=True)
+        (directory / "feature.toml").write_text(toml)
+        (directory / "install.sh").write_text(script)
+
+    def test_generated_dockerfile_and_compose(self):
+        self.feature("zeta", 'apt = ["zlib1g-dev", "python3"]\nrequires = ["alpha"]\n'
+                     'volumes = {zcache = "/z"}\ncompose = {cap_add = ["SYS_PTRACE"]}\n')
+        self.feature("alpha", 'env = {A = "say \\"hi\\""}\n')
+        self.feature("python", 'description = "user python"\n', "echo user\n")
+        features = profiles.load_features()
+        self.assertEqual(features["python"]["description"], "user python")
+        profile = profiles.check_profile("t", {"base": "cuda", "features": ["zeta", "python", "rust"],
+                                               "agents": ["codex", "claude"]})
+        path = profiles.generate("t", profile, features)
+        dockerfile = (path.parent / "Dockerfile").read_text()
+        order = [dockerfile.index(f"features/{name}/install.sh") for name in ("alpha", "python", "rust", "zeta")]
+        self.assertEqual(order, sorted(order))
+        steps = [dockerfile.index(step) for step in (
+            "base/node.sh", "features/alpha/", "ARG AGENT_CACHE_BUST=0", "agents/claude.sh", "agents/codex.sh")]
+        self.assertEqual(steps, sorted(steps))
+        self.assertNotIn("opencode", dockerfile)
+        self.assertIn("FROM nvidia/cuda:", dockerfile)
+        self.assertIn("RUN bash $SCRIPTS/base/apt.sh libssl-dev pkg-config python3 zlib1g-dev\n", dockerfile)
+        self.assertIn('ENV A="say \\"hi\\""\n', dockerfile)
+        self.assertIn('CMD ["claude", "--dangerously-skip-permissions"]', dockerfile)
+        self.assertEqual((path.parent / "features/python/install.sh").read_text(), "echo user\n")
+        compose = json.loads(path.read_text().split("\n", 1)[1])
+        service = compose["services"]["agent-dev"]
+        self.assertEqual(service["image"], "agent-sandbox-t")
+        self.assertEqual(service["runtime"], "nvidia")
+        self.assertEqual(service["cap_add"], ["SYS_PTRACE"])
+        self.assertIn("zcache:/z", service["volumes"])
+        self.assertEqual(compose["volumes"]["cargo-target"], {})
+        self.assertNotIn("pip-cache", compose["volumes"])
+        profile["features"] = ["python"]
+        profiles.generate("t", profile, features)
+        self.assertFalse((path.parent / "features/zeta").exists())
+
+    def test_invalid_profiles_are_rejected(self):
+        for raw, message in (({"agents": []}, "non-empty"),
+                             ({"agents": ["claude"], "default_agent": "codex"}, "default_agent"),
+                             ({"gpu": True}, "unknown key"), ({"ports": ["x"]}, "invalid port")):
+            with self.subTest(raw=raw), self.assertRaisesRegex(profiles.ConfigError, message):
+                profiles.check_profile("p", raw)
+
+    def config(self, *args, stdin=""):
+        result = subprocess.run([sys.executable, str(ROOT / "sandbox-config.py"), "config", *args],
+                                input=stdin, env={**os.environ, **self.env}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_dialog_creates_and_edits_profile(self):
+        self.feature("zz-tools", 'description = "my user tools"\n')
+        # name, cuda base, toggle python off and rust on, opencode off, codex default, host, ports
+        output = self.config(stdin="dev\n2\n3 4\n\n2\n\n2\n2\n3000 5173:5173\n")
+        self.assertIn("my user tools", output)
+        self.assertIn("Saved profile 'dev' (default)", output)
+        path = self.base / "config/agent-sandbox/config.toml"
+        expected = {"default": "dev", "profiles": {"dev": {
+            "base": "cuda", "features": ["playwright", "rust"], "agents": ["claude", "codex"],
+            "default_agent": "codex", "network": "host", "ports": [3000, "5173:5173"]}}}
+        self.assertEqual(tomllib.loads(path.read_text()), expected)
+        # Menu: edit profile 1, keep every pre-filled answer except clearing the ports.
+        self.config(stdin="2\n1\n\n\n\n\n\nnone\n5\n")
+        expected["profiles"]["dev"]["ports"] = []
+        self.assertEqual(tomllib.loads(path.read_text()), expected)
+        self.assertIn("* dev", self.config("--list"))
+
+
 class SandboxTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -137,6 +239,7 @@ class SandboxTests(unittest.TestCase):
             "HOME": str(self.host),
             "CODEX_HOME": str(self.host / "custom codex"),
             "XDG_CACHE_HOME": str(self.base / "cache"),
+            "XDG_CONFIG_HOME": str(self.base / "config"),
             "TMPDIR": str(self.base),
             "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
             "AGENT_SANDBOX_MODE": "rootful",
@@ -144,6 +247,9 @@ class SandboxTests(unittest.TestCase):
             "OPENAI_API_KEY": "environment-openai-secret",
             "CAPTURE": str(self.base / "capture.json"),
         }
+        self.config = self.base / "config/agent-sandbox/config.toml"
+        self.config.parent.mkdir(parents=True)
+        self.config.write_text(PROFILES)
         self.write(self.host / "custom codex/auth.json", LOGIN)
         self.setup = self.host / "custom codex"
         (self.setup / "config.toml").write_text(CONFIG)
@@ -182,7 +288,9 @@ if "run" in sys.argv:
     names = ["CLAUDE_CREDENTIALS_FILE", "CLAUDE_CONFIG_FILE", "OPENCODE_AUTH_FILE",
              "OPENCODE_CONFIG_FILE", "CODEX_AUTH_FILE"]
     paths = {key: os.environ[key] for key in names}
+    files = [sys.argv[i + 1] for i, arg in enumerate(sys.argv) if arg == "-f"]
     data = {"args": sys.argv[1:], "paths": paths,
+            "compose": [pathlib.Path(path).read_text() for path in files],
             "files": {key: pathlib.Path(path).read_text() for key, path in paths.items()},
             "modes": {key: pathlib.Path(path).stat().st_mode & 0o777 for key, path in paths.items()},
             "env": dict(os.environ)}
@@ -203,14 +311,21 @@ if "run" in sys.argv:
         path.chmod(0o755)
 
     def launch(self, *args, success=True):
+        Path(self.env["CAPTURE"]).unlink(missing_ok=True)
         result = subprocess.run([str(ROOT / "agent-sandbox"), *args, str(self.host)],
-                                env=self.env, capture_output=True, text=True)
+                                env=self.env, capture_output=True, text=True,
+                                stdin=subprocess.DEVNULL)
         if not success:
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(Path(self.env["CAPTURE"]).exists())
             return result
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
-        return json.loads(Path(self.env["CAPTURE"]).read_text())
+        data = json.loads(Path(self.env["CAPTURE"]).read_text())
+        data["status"], data["stderr"] = result.stdout, result.stderr
+        return data
+
+    def run_override(self, data):
+        return json.loads(data["compose"][-1].split("\n", 1)[1])["services"]["agent-dev"]
 
     def test_codex_launch_private_staging_and_cleanup(self):
         data = self.launch("--codex")
@@ -283,9 +398,46 @@ if "run" in sys.argv:
 
     def test_conflicting_options(self):
         for args in (("--codex", "--opencode"), ("--codex", "--agents"),
-                     ("--codex", "--port", "8080"), ("--codex", "--gpu", "--rust")):
+                     ("--codex", "--port", "8080"), ("--port", "8080"), ("--bogus",)):
             with self.subTest(args=args):
                 self.launch(*args, success=False)
+
+    def test_removed_image_flags_point_to_profiles(self):
+        for flag in ("--gpu", "--rust"):
+            self.assertIn("replaced by profiles", self.launch(flag, success=False).stderr)
+
+    def test_agent_must_be_installed_in_profile(self):
+        result = self.launch("-p", "gpu", "--codex", success=False)
+        self.assertIn("profile 'gpu' does not install codex", result.stderr)
+        self.assertEqual(self.launch("-p", "gpu")["env"]["SANDBOX_AGENT"], "claude")
+
+    def test_default_agent_and_port_without_flag(self):
+        data = self.launch("-p", "oc", "--port", "8080")
+        self.assertEqual(data["env"]["SANDBOX_AGENT"], "opencode")
+        self.assertEqual(data["args"][-2:], ["opencode", "--auto"])
+        self.assertEqual(self.run_override(data), {"network_mode": "host"})
+
+    def test_profile_precedence_and_project_file(self):
+        project = self.host / ".agent-sandbox.toml"
+        project.write_text('profile = "oc"\nports = [8080]\n')
+        data = self.launch()
+        self.assertIn("profile oc", data["status"])
+        self.assertEqual(self.run_override(data), {"ports": ["8080:8080"]})
+        data = self.launch("-p", "dev")
+        self.assertIn("profile dev", data["status"])
+        self.assertEqual(self.run_override(data), {"ports": ["3000:3000", "8080:8080"]})
+        project.write_text('network = "host"\nports = [8080]\n')
+        data = self.launch()
+        self.assertIn("profile dev, host networking", data["status"])
+        self.assertIn("ignoring ports", data["stderr"])
+        project.write_text('profile = "missing"\n')
+        self.assertIn("'missing' (from .agent-sandbox.toml) does not exist",
+                      self.launch(success=False).stderr)
+
+    def test_missing_config_without_terminal(self):
+        self.config.unlink()
+        result = self.launch(success=False)
+        self.assertIn("Run 'agent-sandbox config' in a terminal", result.stderr)
 
     def test_claude_and_opencode_defaults(self):
         for args, agent in (((), "claude"), (("--agents",), "claude"), (("--opencode",), "opencode")):
@@ -312,8 +464,6 @@ if "run" in sys.argv:
         stamp = (self.base / "cache/agent-sandbox/update-stamp").read_text().strip()
         self.launch()
         self.assertIn(f"AGENT_CACHE_BUST={stamp}", json.loads(build.read_text()))
-        for dockerfile in ("Dockerfile", "Dockerfile.cuda", "Dockerfile.rust"):
-            self.assertEqual((ROOT / dockerfile).read_text().count("ARG AGENT_CACHE_BUST=0"), 1)
 
     def test_macos_claude_keychain_login(self):
         self.executable("uname", "#!/bin/bash\necho Darwin\n")
@@ -327,16 +477,19 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
         self.assertFalse(list(self.base.glob("agent-sandbox-auth.*")))
 
     @unittest.skipUnless(shutil.which("docker"), "Docker Compose is not installed")
-    def test_rendered_compose_all_images_and_modes(self):
+    def test_rendered_compose_all_profiles_and_modes(self):
         docker = shutil.which("docker")
         # The fake HOME hides the compose CLI plugin; keep the real docker config.
         docker_config = os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))
         for mode in ("rootful", "rootless"):
             self.env["AGENT_SANDBOX_MODE"] = mode
-            for image in ((), ("--gpu",), ("--rust",)):
-                with self.subTest(mode=mode, image=image):
-                    data = self.launch("--codex", *image)
+            for profile in ("dev", "gpu"):
+                with self.subTest(mode=mode, profile=profile):
+                    data = self.launch("-p", profile, *(("--codex",) if profile == "dev" else ()))
                     args = data["args"][:data["args"].index("run")]
+                    # The per-run override lives in the wrapper's temp dir, gone by now.
+                    args[-1] = str(self.base / "run.yml")
+                    Path(args[-1]).write_text(data["compose"][-1])
                     result = subprocess.run([docker, *args, "config", "--format", "json"],
                                             env={**data["env"], "DOCKER_CONFIG": docker_config},
                                             capture_output=True, text=True)
@@ -344,6 +497,7 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
                     rendered = json.loads(result.stdout)
                     self.assertEqual(rendered["name"], "agent-sandbox")
                     service = rendered["services"]["agent-dev"]
+                    self.assertEqual(service["image"], f"agent-sandbox-{profile}")
                     self.assertEqual(service["environment"]["OPENAI_API_KEY"], "")
                     self.assertEqual(service["environment"]["ANTHROPIC_API_KEY"], "")
                     self.assertEqual(service["environment"]["CODEX_HOME"], "/home/dev/.codex")
@@ -352,6 +506,13 @@ echo '{"claudeAiOauth":{"accessToken":"keychain-oauth"},"primaryApiKey":"secret"
                     self.assertTrue(mounts["/tmp/host-codex-setup"]["read_only"])
                     self.assertEqual(mounts["/tmp/host-codex-setup"]["source"], data["env"]["CODEX_SETUP_DIR"])
                     self.assertEqual(mounts["/home/dev/.codex"]["type"], "volume")
+                    self.assertEqual(mounts["/home/dev/.cache/uv"]["source"], "uv-cache")
+                    self.assertEqual(rendered["volumes"]["uv-cache"], {"name": "agent-sandbox_uv-cache"})
+                    self.assertEqual("/home/dev/.cargo/target" in mounts, profile == "dev")
+                    self.assertEqual(service.get("runtime"), "nvidia" if profile == "gpu" else None)
+                    host = mode == "rootless" or profile == "gpu"
+                    self.assertEqual(service.get("network_mode"), "host" if host else None)
+                    self.assertEqual(bool(service.get("ports")), not host)
 
     def run_entrypoint(self, host_login, persisted=None, api_keys="false", setup=False, config=None,
                        agent="codex", opencode_config=None):

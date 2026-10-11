@@ -1,0 +1,13 @@
+description = "Rust stable via rustup (rustfmt, clippy) with cargo caches"
+apt = ["pkg-config", "libssl-dev"]
+# Only CARGO_HOME's cache subdirectories are volumes, so the toolchain and the
+# shims in ~/.cargo/bin are never masked by a stale volume.
+volumes = { "cargo-registry" = "/home/dev/.cargo/registry", "cargo-git" = "/home/dev/.cargo/git", "cargo-target" = "/home/dev/.cargo/target" }
+
+[env]
+RUSTUP_HOME = "/home/dev/.rustup"
+CARGO_HOME = "/home/dev/.cargo"
+# Build output goes to a volume instead of the project's target/: it persists,
+# can't collide with a host build, and is shared across projects.
+CARGO_TARGET_DIR = "/home/dev/.cargo/target"
+PATH = "/home/dev/.cargo/bin:${PATH}"

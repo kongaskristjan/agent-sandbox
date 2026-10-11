@@ -5,23 +5,28 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 BASE_COMPOSE="$SCRIPT_DIR/docker-compose.yml"
 export HOST_UID="$(id -u)"
 
+CONFIG_PY="$SCRIPT_DIR/sandbox-config.py"
+
 usage() {
-    echo "Usage: agent-sandbox [--gpu|--rust] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]"
+    echo "Usage: agent-sandbox [-p <profile>] [--host-network] [--update] [--agents|--opencode|--codex] [--api-keys] [--port <port>] [project-dir]"
+    echo "       agent-sandbox config [--list]"
+    echo ""
+    echo "Commands:"
+    echo "  config          Add, edit or delete profiles and pick the default"
+    echo "  config --list   List profiles"
     echo ""
     echo "Options:"
-    echo "  --gpu           Use the CUDA image with NVIDIA GPU passthrough"
-    echo "                  (default: CPU-only ubuntu:24.04 image)"
-    echo "  --rust          Use the Rust image (rustup toolchain, no Python or"
-    echo "                  CUDA) with persistent cargo registry and build caches"
+    echo "  -p, --profile <name>  Use this profile (default: 'profile' in the"
+    echo "                  project's .agent-sandbox.toml, else the config default)"
     echo "  --host-network  Use host networking (always enabled for rootless Docker,"
     echo "                  opt-in for rootful Docker)"
     echo "  --update        Refresh the agent binaries in the image (other layers"
     echo "                  stay cached); future runs reuse the refreshed layer"
     echo "  --agents        Launch the background-agents view ('claude agents')"
     echo "                  instead of an interactive session"
-    echo "  --opencode      Run opencode instead of Claude Code (same image; the"
-    echo "                  agent is selected at runtime, not baked into one)"
+    echo "  --opencode      Run opencode instead of the profile's default agent"
     echo "  --codex         Run Codex using your host ChatGPT login and setup"
+    echo "                  (without these, the profile's default_agent runs)"
     echo "  --api-keys      Also forward stored API keys and ANTHROPIC_API_KEY /"
     echo "                  OPENAI_API_KEY (disabled by default)"
     echo "  --port <port>   (--opencode only) Point opencode at an OpenAI-compatible"
@@ -37,8 +42,12 @@ usage() {
     exit 0
 }
 
-GPU=false
-RUST=false
+if [ "${1:-}" = config ]; then
+    shift
+    exec python3 "$CONFIG_PY" config "$@"
+fi
+
+PROFILE=""
 HOST_NETWORK=false
 UPDATE=false
 AGENTS=false
@@ -50,8 +59,18 @@ PROJECT_DIR=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --gpu) GPU=true ;;
-        --rust) RUST=true ;;
+        -p|--profile)
+            if [ "$#" -lt 2 ]; then
+                echo "Error: $1 requires a profile name." >&2
+                exit 1
+            fi
+            PROFILE="$2"
+            shift
+            ;;
+        --gpu|--rust)
+            echo "Error: $1 was replaced by profiles (base = \"cuda\", the rust feature); run 'agent-sandbox config'." >&2
+            exit 1
+            ;;
         --host-network) HOST_NETWORK=true ;;
         --update) UPDATE=true ;;
         --agents) AGENTS=true ;;
@@ -67,15 +86,14 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --help|-h) usage ;;
+        -*)
+            echo "Error: unknown option $1 (see --help)." >&2
+            exit 1
+            ;;
         *) PROJECT_DIR="$1" ;;
     esac
     shift
 done
-
-if [ "$GPU" = true ] && [ "$RUST" = true ]; then
-    echo "Error: --gpu and --rust select different images; pick one." >&2
-    exit 1
-fi
 
 if [ "$OPENCODE" = true ] && [ "$AGENTS" = true ]; then
     echo "Error: --opencode and --agents select different agents; pick one." >&2
@@ -87,29 +105,14 @@ if [ "$CODEX" = true ] && { [ "$OPENCODE" = true ] || [ "$AGENTS" = true ]; }; t
     exit 1
 fi
 
-if [ -n "$PORT" ]; then
-    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-        echo "Error: --port must be a number between 1 and 65535 (got: $PORT)." >&2
-        exit 1
-    fi
-    if [ "$OPENCODE" != true ]; then
-        echo "Error: --port only applies to --opencode." >&2
-        exit 1
-    fi
+if [ -n "$PORT" ] && ! { [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; }; then
+    echo "Error: --port must be a number between 1 and 65535 (got: $PORT)." >&2
+    exit 1
 fi
 
-export PROJECT_DIR="${PROJECT_DIR:-$(pwd)}"
-
-# Which agent the entrypoint launches. Orthogonal to the image: every agent is
-# installed in every image and picked at runtime, so it composes with
-# --rust/--gpu/--host-network.
-if [ "$OPENCODE" = true ]; then
-    export SANDBOX_AGENT="opencode"
-elif [ "$CODEX" = true ]; then
-    export SANDBOX_AGENT="codex"
-else
-    export SANDBOX_AGENT="claude"
-fi
+# Absolute, so Compose doesn't read a bare relative name as a named volume.
+PROJECT_DIR="$(cd "${PROJECT_DIR:-.}" && pwd)" || { echo "Error: no such project directory." >&2; exit 1; }
+export PROJECT_DIR
 
 # Port of a host OpenAI-compatible server (--port); empty unless --port is
 # given. The entrypoint uses it (opencode only) to point opencode at
@@ -117,11 +120,66 @@ fi
 export OPENCODE_API_PORT="${PORT:-}"
 export OPENCODE_API_HOST="${OPENCODE_API_HOST:-127.0.0.1}"
 
+# Detect rootless vs rootful Docker
+detect_docker_mode() {
+    if [ -n "${AGENT_SANDBOX_MODE:-}" ]; then
+        case "$AGENT_SANDBOX_MODE" in
+            rootless|rootful) echo "$AGENT_SANDBOX_MODE"; return ;;
+            *) echo "Error: AGENT_SANDBOX_MODE must be 'rootless' or 'rootful'" >&2; exit 1 ;;
+        esac
+    fi
+
+    if [ -S "/run/user/$HOST_UID/docker.sock" ]; then
+        echo "rootless"
+        return
+    fi
+
+    local docker_root
+    docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+    if [[ "$docker_root" == "$HOME"* ]]; then
+        echo "rootless"
+        return
+    fi
+
+    echo "rootful"
+}
+
+MODE="$(detect_docker_mode)"
+
+# --port reaches a service on the host, which the container can only do over
+# host networking (127.0.0.1). Rootless already has host networking; opt
+# rootful runs in too so the flag behaves the same in both modes.
+if [ -n "$PORT" ]; then
+    HOST_NETWORK=true
+fi
+
+AUTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-auth.XXXXXX")"
+trap 'rm -rf "$AUTH_DIR"' EXIT
+
+REQUESTED_AGENT=""
+[ "$OPENCODE" = true ] && REQUESTED_AGENT=opencode
+[ "$CODEX" = true ] && REQUESTED_AGENT=codex
+[ "$AGENTS" = true ] && REQUESTED_AGENT=agents
+PREPARE_ARGS=(prepare --project-dir "$PROJECT_DIR" --profile "$PROFILE" --agent "$REQUESTED_AGENT"
+              --mode "$MODE" --run-compose "$AUTH_DIR/run.yml" --env-out "$AUTH_DIR/profile.env")
+[ "$HOST_NETWORK" = true ] && PREPARE_ARGS+=(--host-network)
+
+# Resolves the profile (running the setup dialog on first use), generates its
+# Dockerfile and compose override, and sets SANDBOX_AGENT, RUN_ARGS,
+# PROFILE_COMPOSE and PROFILE_STATUS.
+python3 "$CONFIG_PY" "${PREPARE_ARGS[@]}"
+# shellcheck source=/dev/null
+source "$AUTH_DIR/profile.env"
+export SANDBOX_AGENT
+
+if [ -n "$PORT" ] && [ "$SANDBOX_AGENT" != opencode ]; then
+    echo "Error: --port only applies to opencode (--opencode)." >&2
+    exit 1
+fi
+
 # Stage only the selected agent's credentials in private, read-only mounts.
 # Filtering must happen on the host: filtering after mounting would still
 # expose the original API keys to processes inside the sandbox.
-AUTH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-sandbox-auth.XXXXXX")"
-trap 'rm -rf "$AUTH_DIR"' EXIT
 export CLAUDE_CREDENTIALS_FILE="$AUTH_DIR/claude-credentials.json"
 export CLAUDE_CONFIG_FILE="$AUTH_DIR/claude.json"
 export OPENCODE_AUTH_FILE="$AUTH_DIR/opencode-auth.json"
@@ -146,7 +204,7 @@ stage_auth() {
     python3 "$SCRIPT_DIR/prepare-auth.py" "$1" "$2" "$3" "$API_KEYS"
 }
 
-if [ "$CODEX" = true ]; then
+if [ "$SANDBOX_AGENT" = codex ]; then
     stage_auth codex "${CODEX_HOME:-$HOME/.codex}/auth.json" "$CODEX_AUTH_FILE"
     stage_auth codex-setup "${CODEX_HOME:-$HOME/.codex}" "$CODEX_SETUP_DIR/codex"
     if [ -d "$HOME/.agents/skills" ]; then
@@ -158,7 +216,7 @@ if [ "$CODEX" = true ]; then
         echo "To forward a host login, run: codex -c 'cli_auth_credentials_store=\"file\"' login"
         echo "API-key authentication requires --api-keys."
     fi
-elif [ "$OPENCODE" = true ]; then
+elif [ "$SANDBOX_AGENT" = opencode ]; then
     stage_auth opencode "$HOME/.local/share/opencode/auth.json" "$OPENCODE_AUTH_FILE"
     stage_auth config "$HOME/.config/opencode/opencode.json" "$OPENCODE_CONFIG_FILE"
     if [ ! -s "$OPENCODE_AUTH_FILE" ] && [ -z "$SANDBOX_ANTHROPIC_API_KEY$SANDBOX_OPENAI_API_KEY" ]; then
@@ -201,60 +259,9 @@ done
 # rootful Docker the daemon would create it owned by root.
 mkdir -p "$HOME/.claude/skills"
 
-# Detect rootless vs rootful Docker
-detect_docker_mode() {
-    if [ -n "${AGENT_SANDBOX_MODE:-}" ]; then
-        case "$AGENT_SANDBOX_MODE" in
-            rootless|rootful) echo "$AGENT_SANDBOX_MODE"; return ;;
-            *) echo "Error: AGENT_SANDBOX_MODE must be 'rootless' or 'rootful'" >&2; exit 1 ;;
-        esac
-    fi
-
-    if [ -S "/run/user/$HOST_UID/docker.sock" ]; then
-        echo "rootless"
-        return
-    fi
-
-    local docker_root
-    docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
-    if [[ "$docker_root" == "$HOME"* ]]; then
-        echo "rootless"
-        return
-    fi
-
-    echo "rootful"
-}
-
-MODE="$(detect_docker_mode)"
-OVERRIDE_COMPOSE="$SCRIPT_DIR/docker-compose.${MODE}.yml"
-
-# --port reaches a service on the host, which the container can only do over
-# host networking (127.0.0.1). Rootless already has host networking; opt
-# rootful runs in too so the flag behaves the same in both modes.
-if [ -n "$PORT" ] && [ "$MODE" = "rootful" ]; then
-    HOST_NETWORK=true
-fi
-
-# Build compose file list
-COMPOSE_FILES=(-f "$BASE_COMPOSE" -f "$OVERRIDE_COMPOSE")
-
-if [ "$GPU" = true ]; then
-    COMPOSE_FILES+=(-f "$SCRIPT_DIR/docker-compose.gpu.yml")
-fi
-
-if [ "$RUST" = true ]; then
-    COMPOSE_FILES+=(-f "$SCRIPT_DIR/docker-compose.rust.yml")
-fi
-
-# Add host networking override if requested (meaningful for rootful; rootless already has it)
-STATUS="$MODE"
-[ "$GPU" = true ] && STATUS="$STATUS, gpu"
-[ "$RUST" = true ] && STATUS="$STATUS, rust"
-if [ "$HOST_NETWORK" = true ] && [ "$MODE" = "rootful" ]; then
-    COMPOSE_FILES+=(-f "$SCRIPT_DIR/docker-compose.host-network.yml")
-    STATUS="$STATUS, host networking"
-fi
-echo "Docker mode: $STATUS"
+COMPOSE_FILES=(-f "$BASE_COMPOSE" -f "$SCRIPT_DIR/docker-compose.${MODE}.yml"
+               -f "$PROFILE_COMPOSE" -f "$AUTH_DIR/run.yml")
+echo "Docker mode: $PROFILE_STATUS"
 
 # --update bumps a stamp fed to AGENT_CACHE_BUST, which rebuilds the agent
 # layers. It is passed on every build: with a one-off value the next plain
@@ -269,16 +276,6 @@ if [ "$UPDATE" = false ]; then
     BUILD_ARGS+=(--quiet)
 fi
 
-# Override the default command to launch a specific agent/view. opencode runs
-# in the compose working_dir (/workspace/project), so it takes no project arg.
-RUN_ARGS=()
-if [ "$OPENCODE" = true ]; then
-    RUN_ARGS=(opencode --auto)
-elif [ "$CODEX" = true ]; then
-    RUN_ARGS=(codex --dangerously-bypass-approvals-and-sandbox -c 'cli_auth_credentials_store="file"' -c 'projects."/workspace/project".trust_level="trusted"')
-elif [ "$AGENTS" = true ]; then
-    RUN_ARGS=(claude agents --dangerously-skip-permissions)
-fi
-
 docker compose "${COMPOSE_FILES[@]}" build "${BUILD_ARGS[@]}"
-docker compose "${COMPOSE_FILES[@]}" run --rm agent-dev ${RUN_ARGS[@]+"${RUN_ARGS[@]}"}
+# --service-ports publishes the profile's ports, which `run` skips by default.
+docker compose "${COMPOSE_FILES[@]}" run --rm --service-ports agent-dev "${RUN_ARGS[@]}"

@@ -28,16 +28,14 @@ if [ "$AGENT" = "opencode" ]; then
     chown -R dev:dev /home/dev/.config/opencode /home/dev/.local/share/opencode 2>/dev/null || true
 fi
 
-# Same for the uv cache volume
-mkdir -p /home/dev/.cache/uv
-chown -R dev:dev /home/dev/.cache 2>/dev/null || true
+# Same for the uv cache and uv-managed Python volumes (python feature)
+if [ -n "${UV_CACHE_DIR:-}" ]; then
+    mkdir -p /home/dev/.cache/uv /home/dev/.local/share/uv/python
+    chown -R dev:dev /home/dev/.cache /home/dev/.local 2>/dev/null || true
+fi
 
-# Same for the uv-managed Python interpreter volume
-mkdir -p /home/dev/.local/share/uv/python
-chown -R dev:dev /home/dev/.local 2>/dev/null || true
-
-# Same for the Cargo dependency and build cache volumes (--rust image only;
-# CARGO_HOME is unset in the others). Only the mount points are chowned, not
+# Same for the Cargo dependency and build cache volumes (rust feature;
+# CARGO_HOME is unset without it). Only the mount points are chowned, not
 # their contents: the volumes start out empty and everything inside them is
 # written by dev, so a recursive pass would just re-walk a large cache on
 # every start.
@@ -48,33 +46,35 @@ if [ -n "${CARGO_HOME:-}" ]; then
     chown dev:dev "${CARGO_DIRS[@]}" 2>/dev/null || true
 fi
 
-# The Playwright browsers dir is a named volume, which masks whatever the
+# Playwright feature: the browsers dir is a named volume, which masks whatever the
 # image has at that path once the volume exists. Sync in any browser revision
 # baked into the image (under /opt/playwright-seed) that the volume doesn't
 # have yet, so a PLAYWRIGHT_CLI_VERSION bump reaches existing volumes on the
 # next start. Runtime installs by playwright-cli still land in the volume and
 # persist.
-mkdir -p /opt/playwright-browsers
-chown dev:dev /opt/playwright-browsers 2>/dev/null || true
-if [ -d /opt/playwright-seed ]; then
-    for src in /opt/playwright-seed/*; do
-        [ -e "$src" ] || continue
-        dst="/opt/playwright-browsers/$(basename "$src")"
-        if [ ! -e "$dst" ]; then
-            # Copy under a temp name and rename, so a start interrupted
-            # mid-copy can't leave a half-populated revision that looks installed
-            rm -rf "$dst.tmp"
-            if cp -a "$src" "$dst.tmp" 2>/dev/null; then
-                chown -R dev:dev "$dst.tmp" 2>/dev/null || true
-                mv "$dst.tmp" "$dst"
-            else
+if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+    mkdir -p /opt/playwright-browsers
+    chown dev:dev /opt/playwright-browsers 2>/dev/null || true
+    if [ -d /opt/playwright-seed ]; then
+        for src in /opt/playwright-seed/*; do
+            [ -e "$src" ] || continue
+            dst="/opt/playwright-browsers/$(basename "$src")"
+            if [ ! -e "$dst" ]; then
+                # Copy under a temp name and rename, so a start interrupted
+                # mid-copy can't leave a half-populated revision that looks installed
                 rm -rf "$dst.tmp"
+                if cp -a "$src" "$dst.tmp" 2>/dev/null; then
+                    chown -R dev:dev "$dst.tmp" 2>/dev/null || true
+                    mv "$dst.tmp" "$dst"
+                else
+                    rm -rf "$dst.tmp"
+                fi
             fi
-        fi
-    done
+        done
+    fi
+    # Remove profiles left by the Playwright MCP older images used.
+    rm -rf /opt/playwright-browsers/mcp-* 2>/dev/null || true
 fi
-# Remove profiles left by the Playwright MCP older images used.
-rm -rf /opt/playwright-browsers/mcp-* 2>/dev/null || true
 
 # Copy host auth files so dev user can use the existing credentials.
 if [ "$AGENT" = "codex" ]; then
@@ -284,7 +284,7 @@ fi
 
 # Start the CUDA MPS control daemon, so several processes sharing the GPU run
 # their kernels concurrently in one context instead of being time-sliced.
-# Only reachable in the --gpu image: nvidia-cuda-mps-control is a driver binary
+# Only reachable with the cuda base: nvidia-cuda-mps-control is a driver binary
 # the NVIDIA Container Toolkit mounts in (it ships with the "utility" driver
 # capability), and /dev/nvidiactl only exists when a GPU is passed through.
 # The daemon runs as root here; a root-run control daemon spawns a per-user MPS
